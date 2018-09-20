@@ -1,0 +1,364 @@
+---
+title: "Tímaæfing 3"
+author:
+- "Brynjólfur Gauti Jónsson"
+output:
+  pdf_document:
+    includes:
+      in_header: reiknigreind_snidmat.tex
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+# echo = TRUE: Sýna kóða
+# message = FALSE: Ekki sýna óþarfa skilaboð í ritgerð
+# warning = FALSE: Ekki sýna viðvaranir í ritgerð
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r, results = 'hide'}
+packages <- c("tidyverse", "ggthemes", "knitr", "kableExtra", "Matrix", "feather")
+sapply(packages, require, character.only = TRUE, quietly = TRUE)
+theme_set(theme_tufte(base_size = 14) +
+                theme(panel.border = element_rect(fill = NA),
+                      panel.grid.major = element_line(color = "gray78"),
+                      legend.background = element_rect(),
+                      legend.position = "top",
+                      axis.text.x = element_text(angle = 30, hjust = 1)))
+```
+
+```{r}
+if (!file.exists("ttt_data.feather")) {
+      data <- crossing("1" = c(0, 1, 9),
+                       "2" = c(0, 1, 9),
+                       "3" = c(0, 1, 9),
+                       "4" = c(0, 1, 9),
+                       "5" = c(0, 1, 9),
+                       "6" = c(0, 1, 9),
+                       "7" = c(0, 1, 9),
+                       "8" = c(0, 1, 9),
+                       "9" = c(0, 1, 9), 
+                       player = c("1", "9"),
+                       n = 0,
+                       value = 0,
+                       active = 0) %>%
+            unite(col = "states", as.character(1:9), sep = "") %>%
+            select(player, states, active, value, n)
+      write_feather(data, "ttt_data.feather")
+} else {
+      data <- read_feather("ttt_data.feather")
+}
+
+player1 <- data %>%
+      filter(player == "1") %>%
+      select(-n)
+class(player1) <- c(class(player1), "player1")
+player2 <- data %>%
+      filter(player == "9")
+class(player2) <- c(class(player2), "player2")
+rm(data)
+```
+
+```{r}
+sample_paths <- function(data, n) {
+      curr_dat <- data %>%
+            filter(active == 1)
+      state <- curr_dat$states
+      player <- 9
+      legal_moves <- str_locate_all(state, "0")[[1]][, 1]
+      
+      
+      for (i in seq_len(n)) {
+            board <- state %>%
+                  str_split("", simplify = TRUE) %>% 
+                  as.numeric %>% 
+                  Matrix(nrow = 3, ncol = 3, byrow = TRUE)
+            
+            move <- sample(legal_moves, 1)
+            orig_move <- as.character(move)
+            board[move] <- 9
+            eval_state <- str_flatten(as.character(board))
+            
+            win = any(colSums(board) %in% c(3, 27)) | 
+                  any(rowSums(board) %in% c(3, 27)) | 
+                  sum(diag(board)) %in% c(3, 27)    | 
+                  sum(board[row(board) + col(board) == 4]) %in% c(3, 27)
+            
+            while (any(board == 0) & win == FALSE) {
+                  player <- setdiff(c(1, 9), player)
+                  legal_moves <- which(board == 0)
+                  move <- sample(legal_moves, 1)
+                  board[move] <- player
+                  
+                  win = any(colSums(board) %in% c(3, 27)) | 
+                        any(rowSums(board) %in% c(3, 27)) | 
+                        sum(diag(board)) %in% c(3, 27)    | 
+                        sum(board[row(board) + col(board) == 4]) %in% c(3, 27)
+                  
+                  
+            }
+            
+            if (player == 9) {
+                  score <- 1
+            } else if (!win) {
+                  score <- 0
+            } else {
+                  score <- -1
+            }
+            
+            data <- data %>%
+                  mutate(n = ifelse(states == eval_state,
+                                    n + 1,
+                                    n),
+                         value = ifelse(states == eval_state,
+                                        value + (score - value) / n,
+                                        value))
+      }
+      class(data) <- c(class(data), "player2")
+      return(data)
+}
+```
+
+
+
+```{r}
+move1 <- function(data, epsilon = 0.1, alpha = 0.1) {
+      state <- data[data$active == 1, "states", drop = T]
+      legal_moves <- str_locate_all(state, "0")[[1]][, 1]
+      
+      
+      board <- state %>%
+            str_split("", simplify = TRUE) %>% 
+            as.numeric %>% 
+            Matrix(nrow = 3, ncol = 3, byrow = TRUE)
+      
+      if (runif(1) < epsilon) {
+            move <- sample(legal_moves)
+      } else {
+            check_states <- vector("character", length(legal_moves))
+            for (i in seq_along(legal_moves)) {
+                  move <- legal_moves[i]
+                  check_board <- board
+                  check_board[move] <- 1
+                  check_states[i] <- str_flatten(as.character(check_board))
+            }
+            move <- data %>%
+                  inner_join(data_frame(move = legal_moves, 
+                                        states = check_states)) %>%
+                  filter(value == max(value)) %>%
+                  sample_n(1) %>%
+                  .$move
+      }
+      
+      board[move] <- 1
+      move <- as.character(move)
+      
+      win = any(colSums(board) %in% c(3, 27)) | 
+            any(rowSums(board) %in% c(3, 27)) | 
+            sum(diag(board)) %in% c(3, 27)    | 
+            sum(board[row(board) + col(board) == 4]) %in% c(3, 27)
+      new_state <- str_flatten(as.character(board))
+      if (win) {
+            data$active <- 0
+            data <- data %>%
+                  mutate(value = ifelse(states == state,
+                                        value + alpha * (1 - value),
+                                        ifelse(states == new_state,
+                                               1,
+                                               value)))
+            data$active = 9999
+            return(data)
+      } else if (length(legal_moves) < 7) {
+            data$active <- 0
+            old_val <- data$value[data$states == state]
+            new_val <- data$value[data$states == new_state]
+            
+            data[data$states == state, "value"] <- old_val + alpha * (new_val - old_val)
+            data[data$states == new_state, "active"] <- 1
+            return(data)
+      } else if (length(legal_moves) == 1) {
+            data[data$states == state, "value"] <- 0.5
+            return(data)
+      }
+      data$active <- 0
+      data[data$states == new_state, "active"] <- 1
+      return(data)
+}
+
+move2 <- function(data) {
+      state <- data[data$active == 1, "states", drop = T]
+      legal_moves <- str_locate_all(state, "0")[[1]][, 1]
+      
+      
+      board <- state %>%
+            str_split("", simplify = TRUE) %>% 
+            as.numeric %>% 
+            Matrix(nrow = 3, ncol = 3, byrow = TRUE)
+      
+      legal_states <- vector("character", length(legal_moves))
+      for (i in seq_along(legal_moves)) {
+            move <- legal_moves[i]
+            next_board <- board
+            next_board[move] <- 1
+            legal_states[i] <- str_flatten(as.character(next_board))
+      }
+      move <- data %>%
+            inner_join(data_frame(move = legal_moves, 
+                                  states = legal_states)) %>%
+            filter(value == max(value)) %>%
+            sample_n(1) %>%
+            .$move
+      
+      board[move] <- 1
+      move <- as.character(move)
+      
+      win = any(colSums(board) %in% c(3, 27)) | 
+            any(rowSums(board) %in% c(3, 27)) | 
+            sum(diag(board)) %in% c(3, 27)    | 
+            sum(board[row(board) + col(board) == 4]) %in% c(3, 27)
+      
+      new_state <- str_flatten(as.character(board))
+      
+      
+      if (win | length(legal_moves) == 1) {
+            data$active <- 9999
+            return(data)
+      }
+      data$active <- 0
+      data[data$states == new_state, "active"] <- 1
+      return(data)
+}
+```
+
+
+```{r}
+play_games <- function(num_games = 100, mc_num) {
+      if (!file.exists("ttt_data.feather")) {
+            data <- crossing("1" = c(0, 1, 9),
+                             "2" = c(0, 1, 9),
+                             "3" = c(0, 1, 9),
+                             "4" = c(0, 1, 9),
+                             "5" = c(0, 1, 9),
+                             "6" = c(0, 1, 9),
+                             "7" = c(0, 1, 9),
+                             "8" = c(0, 1, 9),
+                             "9" = c(0, 1, 9), 
+                             player = c("1", "9"),
+                             n = 0,
+                             value = 0,
+                             active = 0) %>%
+                  unite(col = "states", as.character(1:9), sep = "") %>%
+                  select(player, states, active, value, n)
+            write_feather(data, "ttt_data.feather")
+      } else {
+            data <- read_feather("ttt_data.feather")
+      }
+      
+      player1 <- data %>%
+            filter(player == "1") %>%
+            select(-n)
+      player2 <- data %>%
+            filter(player == "9")
+      rm(data)
+      
+      scoring <- vector("character", num_games)
+      match_wins <- vector("numeric", num_games / 10)
+      for (i in seq_len(num_games)) {
+            player1[player1$states == "000000000", "active"] <- 1
+            while (!any(player1$active == 9999)) {
+                  player1 <- move1(player1)
+                  if (player1$active[1] == 9999) {
+                        scoring[i] <- "player1"
+                        break
+                  }
+                  player2$active <- player1$active
+                  player2 <- player2 %>%
+                        sample_paths(mc_num) %>%
+                        move2
+                  if (player2$active[1] == 9999) {
+                        scoring[i] <- "player2"
+                        break
+                  }
+                  player1$active <- player2$active
+            }
+            player1$active <- 0
+            player2$active <- 0
+            
+            if (i %% (num_games / 10) == 0) {
+                  wins <- 0
+                  for (j in seq_len(10)) {
+                        player1[player1$states == "000000000", "active"] <- 1
+                        while (!any(player1$active == 9999)) {
+                              player1 <- move1(player1)
+                              if (player1$active[1] == 9999) {
+                                    wins <- wins + 1
+                                    break
+                              }
+                              player2$active <- player1$active
+                              player2 <- player2 %>%
+                                    sample_paths(mc_num) %>%
+                                    move2
+                              player1$active <- player2$active
+                        }
+                        player1$active <- 0
+                        player2$active <- 0
+                  }
+                  writeLines(paste0("Match ", i / 100, "Player1 won ", wins, " games."))
+                  match_wins[i / 100] <- wins
+            }
+      }
+      write_path <- paste0("mc", mc_num, "player2.feather")
+      write_feather(player2, write_path)
+      data_frame(round = seq_len(num_games),
+                 winner = scoring,
+                 wins = c(match_wins, seq_len(num_games - length(match_wins))),
+                 match = c(seq_len(10), seq_len(num_games - length(match_wins))))
+}
+```
+
+```{r}
+if (!file.exists("mc10.feather")) {
+      mc10 <- play_games(100, mc_num = 10)
+      write_feather(mc10, "mc10.feather")
+} else {
+      mc10 <- read_feather("mc10.feather")
+}
+
+# mc10 %>%
+#       mutate(player1 = cumsum(winner == "player1"),
+#              player2 = cumsum(winner == "player2")) %>%
+#       gather(player, wins, player1, player2) %>%
+#       ggplot(aes(round, wins, col = player)) +
+#       geom_line()
+
+read_feather("mc10player2.feather") %>%
+      arrange(desc(value))
+```
+
+```{r}
+if (!file.exists("mc30.feather")) {
+      mc30 <- play_games(1000, mc_num = 30)
+      write_feather(mc30, "mc30.feather")
+} else {
+      mc30 <- read_feather("mc30.feather")
+}
+```
+
+```{r}
+if (!file.exists("mc100.feather")) {
+      mc100 <- play_games(1000, mc_num = 100)
+      write_feather(mc100, "mc100.feather")
+} else {
+      mc100 <- read_feather("mc100.feather")
+}
+
+# mc100 %>%
+#       mutate(player1 = cumsum(winner == "player1"),
+#              player2 = cumsum(winner == "player2")) %>%
+#       gather(player, wins, player1, player2) %>%
+#       ggplot(aes(round, wins, col = player)) +
+#       geom_line()
+```
